@@ -38,6 +38,8 @@ async function run() {
     const vendorsCollection = client.db("shopSphere").collection("Vendors");
     const purchasesCollection = client.db("shopSphere").collection("purchases");
     const paymentsCollection = client.db("shopSphere").collection("payments");
+    const bookmarksCollection = client.db("shopSphere").collection("bookmarks");
+    const buyDataCollection = client.db("shopSphere").collection("buys");
 
     // verify token
     const verifyToken = (req, res, next) => {
@@ -81,12 +83,19 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/user/:email", async (req, res) => {
+    app.get("/admin/:email", async (req, res) => {
       const email = req.params.email;
       const filter = { email: email };
       const user = await usersCollection.findOne(filter);
       const isAdmin = user?.role === "admin";
       res.send({ admin: isAdmin });
+    });
+
+    app.get("/user/:email", async (req, res) => {
+      const email = req.params.email;
+      const filter = { email: email };
+      const user = await usersCollection.findOne(filter);
+      res.send({ user: !!user });
     });
 
     app.patch("/user/:id", verifyToken, verifyAdmin, async (req, res) => {
@@ -156,7 +165,7 @@ async function run() {
       });
     });
 
-    app.get("/categories", verifyToken, verifyAdmin, async (req, res) => {
+    app.get("/categories", verifyToken, async (req, res) => {
       const result = await categoriesCollection
         .find()
         .sort({ _id: -1 })
@@ -291,23 +300,26 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/payments', async(req,res)=>{
+    app.get("/payments", async (req, res) => {
       const vendorId = req.query.v;
-      const query = { vendor : vendorId, status: "unpaid"};
+      const query = { vendor: vendorId, status: "unpaid" };
       const projection = { vendor: 1, product: 1, total_price: 1 };
-      const result = await purchasesCollection.find(query).project(projection).toArray();
+      const result = await purchasesCollection
+        .find(query)
+        .project(projection)
+        .toArray();
       res.send(result);
-    })
+    });
 
-    app.get('/payments/:v', async(req,res)=> {
+    app.get("/payments/:v", async (req, res) => {
       const vendor = req.params.v;
-      const query = {  vendor_id : vendor };
+      const query = { vendor_id: vendor };
       const result = await paymentsCollection.findOne(query);
       res.send(result);
-    })
+    });
 
     app.get("/vendors", async (req, res) => {
-      const result = await vendorsCollection.find().sort({_id : -1}).toArray();
+      const result = await vendorsCollection.find().sort({ _id: -1 }).toArray();
       res.send(result);
     });
 
@@ -319,7 +331,8 @@ async function run() {
         product: purchase.product,
         quantity: parseInt(purchase.quantity),
         unit_price: purchase.unit_price,
-        total_price: parseInt(purchase.quantity)*parseInt(purchase.unit_price),
+        total_price:
+          parseInt(purchase.quantity) * parseInt(purchase.unit_price),
         note: purchase.note,
         status: "unpaid",
         purchase_at: moment().toString(),
@@ -337,12 +350,16 @@ async function run() {
 
       // 3rd part
       const vendor_id = purchase.vendor;
-      const current_balance = await paymentsCollection.findOne(
-        { vendor_id },{ projection: { balance: 1,_id: 0 } }) || { balance: 0 };
+      const current_balance = (await paymentsCollection.findOne(
+        { vendor_id },
+        { projection: { balance: 1, _id: 0 } }
+      )) || { balance: 0 };
       const cash_out = {
         product: purchase.product,
         cash_out: parseInt(purchase.unit_price) * parseInt(purchase.quantity),
-        balance_after_cash_out: current_balance.balance - (parseInt(purchase.unit_price) * parseInt(purchase.quantity)),
+        balance_after_cash_out:
+          current_balance.balance -
+          parseInt(purchase.unit_price) * parseInt(purchase.quantity),
         note: purchase.note,
         at: moment().format(),
       };
@@ -351,46 +368,127 @@ async function run() {
       if (existPayment) {
         const updateQuery = {
           $push: { payments: cash_out },
-          $set: { 
-            balance: existPayment.balance - (parseInt(purchase.unit_price) * parseInt(purchase.quantity))
-          }
+          $set: {
+            balance:
+              existPayment.balance -
+              parseInt(purchase.unit_price) * parseInt(purchase.quantity),
+          },
         };
         await paymentsCollection.updateOne({ vendor_id }, updateQuery);
       } else {
-        const payment = { vendor_id, balance: 0 - (parseInt(purchase.unit_price) * parseInt(purchase.quantity)), payments: [cash_out] };
+        const payment = {
+          vendor_id,
+          balance:
+            0 - parseInt(purchase.unit_price) * parseInt(purchase.quantity),
+          payments: [cash_out],
+        };
         await paymentsCollection.insertOne(payment);
       }
 
       res.send({ purchaseResult, updateResult });
     });
 
-
-
     app.post("/cash-in", async (req, res) => {
-     const cashIn = req.body;
-     const current_balance = await paymentsCollection.findOne({vendor_id : cashIn.vendor_id},{ projection: { balance: 1,_id: 0 } })
-     const parseCashIn = JSON.parse(cashIn.cash_in);
-     const newCashIn = {
-      product : parseCashIn.product,
-      cash_in : parseInt(parseCashIn.total_price),
-      balance_after_cash_in: current_balance.balance + parseInt(parseCashIn.total_price) ,
-      note: cashIn.note,
-      at: moment().format()
-     } 
-     const query = { vendor_id: cashIn.vendor_id }
-     const updateData = {
-      $push : {payments: newCashIn},
-      $set : {balance: current_balance.balance + parseInt(parseCashIn.total_price)}
-     }
-     const result = await paymentsCollection.updateOne(query, updateData);
+      const cashIn = req.body;
+      const current_balance = await paymentsCollection.findOne(
+        { vendor_id: cashIn.vendor_id },
+        { projection: { balance: 1, _id: 0 } }
+      );
+      const parseCashIn = JSON.parse(cashIn.cash_in);
+      const newCashIn = {
+        product: parseCashIn.product,
+        cash_in: parseInt(parseCashIn.total_price),
+        balance_after_cash_in:
+          current_balance.balance + parseInt(parseCashIn.total_price),
+        note: cashIn.note,
+        at: moment().format(),
+      };
+      const query = { vendor_id: cashIn.vendor_id };
+      const updateData = {
+        $push: { payments: newCashIn },
+        $set: {
+          balance: current_balance.balance + parseInt(parseCashIn.total_price),
+        },
+      };
+      const result = await paymentsCollection.updateOne(query, updateData);
 
-     const productId = parseCashIn.productId;
-     const updatePurchaseStatus = await purchasesCollection.updateOne({_id : new ObjectId(productId)}, { $set: { status: 'paid'}})
+      const productId = parseCashIn.productId;
+      const updatePurchaseStatus = await purchasesCollection.updateOne(
+        { _id: new ObjectId(productId) },
+        { $set: { status: "paid" } }
+      );
 
-     res.send({result, updatePurchaseStatus})
+      res.send({ result, updatePurchaseStatus });
     });
 
+    // client part
+    app.get("/all-product", verifyToken, async (req, res) => {
+      const { selectCategory } = req.query;
+      let query = { quantity: { $gt: 0 } };
 
+      const activeCategories = await categoriesCollection
+        .find({ active: true })
+        .toArray();
+      const activeCategoriesName = activeCategories.map(
+        (catName) => catName.category_name
+      );
+
+      if (selectCategory && selectCategory !== "all") {
+        if (activeCategoriesName.includes(selectCategory)) {
+          query.category = selectCategory;
+        } else {
+          query.category = { $in: activeCategoriesName };
+        }
+      } else {
+        query.category = { $in: activeCategoriesName };
+      }
+
+      const result = await productsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.get("/all-product/:id", verifyToken, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await productsCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.post("/bookmarks", verifyToken, async (req, res) => {
+      const { product, author } = req.body;
+      const newBookmark = {
+        author,
+        product_name: product.product_name,
+        product_id: product._id,
+        product_img: product.product_img,
+        category: product.category,
+        product_price: product.product_price,
+        discount_price: product.discount_price,
+        at: moment().format(),
+      };
+      const result = await bookmarksCollection.insertOne(newBookmark);
+      res.send(result);
+    });
+
+    app.get("/bookmarks",verifyToken, async (req, res) => {
+      const email = req.query.email;
+      const query = { author: email };
+      const result = await bookmarksCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.delete("/bookmarks/:id", verifyToken, async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const result = await bookmarksCollection.deleteOne(filter);
+      res.send(result);
+    });
+
+    app.post("/buys",verifyToken, async (req, res) => {
+      const buyData = req.body;
+      const result = await buyDataCollection.insertOne(buyData);
+      res.send(result);
+    });
 
     await client.db("admin").command({ ping: 1 });
     console.log(
